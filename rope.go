@@ -37,6 +37,40 @@ func CreateRope(initial string) *Rope {
 	return r
 }
 
+func (r *Rope) Alter(start, end int, value string) error {
+	if r == nil {
+		return fmt.Errorf("Nil pointer receiver")
+	}
+
+	if start < 0 || start > r.length {
+		return fmt.Errorf("start is not within rope bounds")
+	}
+
+	if end < 0 || end > r.length {
+		return fmt.Errorf("end is not within rope bounds")
+	}
+
+	if start > end {
+		return fmt.Errorf("start is after end")
+	}
+
+	if start == end {
+		// This is a pure insert
+		if value == "" {
+			// No-op; nothing to insert
+			return nil
+		}
+
+		return r.insert(start, value)
+
+	} else if value == "" {
+		// This is a pure remove
+		return r.remove(start, end)
+	}
+
+	return r.alter(start, end, value)
+}
+
 // ByteLength returns the number of bytes necessary to store a contiguous
 // representation of the Rope's contents
 func (r *Rope) ByteLength() int {
@@ -126,6 +160,47 @@ func (r *Rope) adjust() {
 			r.join()
 		}
 	}
+}
+
+func (r *Rope) alter(start, end int, value string) error {
+	valueLength := utf8.RuneCountInString(value)
+	valueByteLength := len(value)
+
+	if r.value != nil {
+		var buf bytes.Buffer
+		byteStart := r.findByteOffsets(start)
+		byteEnd := r.findByteOffsets(end)
+		buf.Grow(len(*r.value) - byteEnd + byteStart + valueByteLength)
+		buf.WriteString((*r.value)[0:byteStart])
+		buf.WriteString(value)
+		buf.WriteString((*r.value)[byteEnd:])
+		s := buf.String()
+		r.value = &s
+		r.byteLength -= byteEnd - byteStart - valueByteLength
+		r.length -= end - start - valueLength
+	} else {
+		leftLength := r.left.length
+		leftStart := min(start, leftLength)
+		rightLength := r.right.length
+		rightEnd := max(0, min(end-leftLength, rightLength))
+
+		valueCutoff := findByteOffset(value, min(valueLength, leftLength-leftStart))
+
+		if leftStart < leftLength {
+			leftEnd := min(end, leftLength)
+			r.left.alter(leftStart, leftEnd, value[:valueCutoff])
+		}
+		if rightEnd > 0 || valueCutoff < valueByteLength {
+			rightStart := max(0, min(start-leftLength, rightLength))
+			valueStart := findByteOffset(value, min(valueLength, leftLength-leftStart))
+			r.right.alter(rightStart, rightEnd, value[valueStart:])
+		}
+		r.byteLength = r.left.byteLength + r.right.byteLength
+		r.length = r.left.length + r.right.length
+	}
+
+	r.adjust()
+	return nil
 }
 
 func (r *Rope) findByteOffsets(position int) int {
@@ -276,6 +351,18 @@ func (read *Reader) writeNodeTo(r *Rope, w io.Writer) (int, error) {
 	m, err = read.writeNodeTo(r.right, w)
 
 	return int(n + m), err
+}
+
+func findByteOffset(s string, position int) int {
+	offset := 0
+	for i := 0; i < position; i++ {
+		r, n := utf8.DecodeRuneInString(s[offset:])
+		if r == utf8.RuneError {
+			return -1
+		}
+		offset += n
+	}
+	return offset
 }
 
 func min(a, b int) int {
